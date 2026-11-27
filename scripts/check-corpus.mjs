@@ -20,10 +20,18 @@
  *        the minifier's independent analysis (inspect().occurrences). This checks the scope analysis that the
  *        bundler stands on.
  *   obfuscate  (lib/obfuscate.mjs — EXPERIMENTAL)
- *     Parse-survival only. For the default option set and for every pass turned on at once, the obfuscated output
- *     must compile in the same mode as the original (V8 is the oracle — obfuscate() ends with its own parser, so
- *     checking only with that would be circular), and obfuscate(obfuscate(x)) must compile too. This measures
- *     nothing about how hard the result is to read; it only proves the transform never produces broken code.
+ *     Behavioural equivalence. With every pass on, the obfuscated output must first compile in the same mode as the
+ *     original (V8 is the oracle — obfuscate() ends with its own parser, so checking only with that would be
+ *     circular) and so must obfuscate(obfuscate(x)). Then the original and the obfuscated form are each executed in
+ *     a matched, deterministic vm context and everything observable is compared: the value / exports produced, all
+ *     console output, any globals the code created, and whether it threw (compared by built-in error kind). Names
+ *     are ignored when serialising — functions compare by arity, errors by kind — because rename deliberately
+ *     changes function/class .name. To stay free of false alarms the oracle only compares a file whose own two runs
+ *     agree (deterministic under the vm), and when the all-passes output diverges it re-runs with rename off: if
+ *     that agrees, the only difference was a name the program read at runtime (a documented, intended change), not a
+ *     bug. This measures nothing about how hard the result is to read; it only proves the transform preserves what
+ *     the code does. It EXECUTES the corpus in-process (imports / require are blocked), so point it only at folders
+ *     you trust.
  *
  *   Folders named node_modules and .git are always skipped; --exclude skips more folder names before reading them.
  */
@@ -143,31 +151,106 @@ function checkMinify(src, mode, report, problems) {
   return true;
 }
 
-// ---- obfuscate (experimental): parse-survival against V8 as the oracle
+// ---- obfuscate (experimental): behavioural-equivalence oracle (see header)
 let O = null;
-const OBF_CONFIGS = {
-  default: undefined,     // obfuscate()'s own default option set
-  all: { rename: true, strings: true, stringArray: true, deadCode: true, controlFlow: true, deadCodeRate: 0.3 },
-};
+const OBF_ALL = { rename: true, strings: true, stringArray: true, deadCode: true, controlFlow: true, deadCodeRate: 0.3 };
+const OBF_NO_RENAME = { ...OBF_ALL, rename: false };
+// A fixed clock / PRNG so code that reads them still runs the same way twice (the rest is caught by the
+// deterministic-run gate, which simply skips a file whose own two runs disagree).
+const OBF_PRELUDE = 'Math.random=(function(){var s=123456789;return function(){s=(1103515245*s+12345)&0x7fffffff;return s/0x7fffffff;};})();' +
+  'Date.now=function(){return 1700000000000;};';
+
+function errKind(e) {
+  for (const K of [TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError]) if (e instanceof K) return K.name;
+  return 'Error';
+}
+// Serialise a runtime value without leaning on any name the obfuscator may change: functions by arity, errors by
+// built-in kind, objects by their (preserved) own keys. Depth / breadth capped; cycles collapsed.
+function canon(v, seen, depth) {
+  if (depth > 6) return '<deep>';
+  if (v === null) return null;
+  const t = typeof v;
+  if (t === 'number') return Number.isNaN(v) ? '<nan>' : v === Infinity ? '<inf>' : v === -Infinity ? '<-inf>' : v;
+  if (t === 'string' || t === 'boolean') return v;
+  if (t === 'undefined') return '<undef>';
+  if (t === 'bigint') return '<big:' + v.toString() + '>';
+  if (t === 'symbol') return '<sym>';
+  if (t === 'function') return '<fn:' + v.length + '>';
+  if (seen.has(v)) return '<cycle>';
+  seen.add(v);
+  try {
+    if (v instanceof Error) return '<err:' + errKind(v) + '>';
+    if (Array.isArray(v)) return (v.length > 64 ? v.slice(0, 64) : v).map((x) => canon(x, seen, depth + 1)).concat(v.length > 64 ? ['<+' + (v.length - 64) + '>'] : []);
+    const out = {};
+    for (const k of Object.keys(v).sort().slice(0, 128)) { try { out[k] = canon(v[k], seen, depth + 1); } catch { out[k] = '<throws>'; } }
+    return out;
+  } finally { seen.delete(v); }
+}
+const can = (v) => canon(v, new Set(), 0);
+
+function observe(code, mode) {
+  const log = [];
+  const sandbox = { console: { log: (...a) => log.push(a.map(can)), warn() {}, error() {}, info() {}, debug() {} } };
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox, { codeGeneration: { wasm: false } });
+  try { vm.runInContext(OBF_PRELUDE, ctx); } catch { /* ignore */ }
+  const before = new Set(Object.keys(sandbox));
+  let threw = null, value;
+  try {
+    if (mode === 'script') value = vm.runInContext(code, ctx, { timeout: 5000 });
+    else {                                               // cjs
+      const fn = vm.compileFunction(code, ['exports', 'require', 'module', '__filename', '__dirname'], { parsingContext: ctx });
+      const module = { exports: {} };
+      fn(module.exports, (id) => { throw new Error('require blocked: ' + id); }, module, '/corpus-file.js', '/');
+      value = module.exports;
+    }
+  } catch (e) { threw = e && e.constructor ? errKind(e) : 'Error'; }
+  const added = {};
+  for (const k of Object.keys(sandbox)) if (!before.has(k)) { try { added[k] = can(sandbox[k]); } catch { added[k] = '<throws>'; } }
+  return { threw, value: threw ? undefined : can(value), log, added };
+}
+async function observeModule(code) {
+  const log = [];
+  const sandbox = { console: { log: (...a) => log.push(a.map(can)), warn() {}, error() {}, info() {}, debug() {} } };
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox, { codeGeneration: { wasm: false } });
+  try { vm.runInContext(OBF_PRELUDE, ctx); } catch { /* ignore */ }
+  let threw = null, value;
+  try {
+    const mod = new vm.SourceTextModule(code, { context: ctx });
+    await mod.link(() => { throw new Error('import blocked'); });
+    await mod.evaluate({ timeout: 5000 });
+    const ns = {}; for (const k of Object.keys(mod.namespace)) { try { ns[k] = can(mod.namespace[k]); } catch { ns[k] = '<throws>'; } }
+    value = ns;
+  } catch (e) { threw = e && e.constructor ? errKind(e) : 'Error'; }
+  return { threw, value: threw ? undefined : value, log, added: {} };
+}
+const runObf = (code, mode) => mode === 'module' ? observeModule(code) : observe(code, mode);
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 async function checkObfuscate(src, mode, report, problems) {
   O ??= await import('../lib/obfuscate.mjs');
   const sourceType = mode === 'cjs' ? 'commonjs' : mode;    // classify() gives script | cjs | module
-  for (const [cname, extra] of Object.entries(OBF_CONFIGS)) {
-    const options = { ...(extra || {}), sourceType, seed: 1 };
-    const col = report.obfuscate.configs[cname];
-    let first;
-    try { first = O.obfuscate(src, options); }
-    catch (e) { col.threw++; problems.push('obfuscate[' + cname + ']: threw: ' + e.message); continue; }
-    col.ran++;
-    for (const r of first.stats.skipped) col.skipped[r.split(':')[0]] = (col.skipped[r.split(':')[0]] || 0) + 1;
-    let err;
-    if ((err = compiles(first.code, mode))) { problems.push('obfuscate[' + cname + ']: output does not compile: ' + err); continue; }
-    let second;
-    try { second = O.obfuscate(first.code, options); }
-    catch (e) { problems.push('obfuscate[' + cname + ']: obfuscate(obfuscate(x)) threw: ' + e.message); continue; }
-    if ((err = compiles(second.code, mode))) { problems.push('obfuscate[' + cname + ']: obfuscate(obfuscate(x)) does not compile: ' + err); continue; }
-    col.ok++;
-  }
+  const col = report.obfuscate;
+  let first, err;
+  try { first = O.obfuscate(src, { ...OBF_ALL, sourceType, seed: 1 }); }
+  catch (e) { col.threw++; problems.push('obfuscate: threw: ' + e.message); return; }
+  for (const r of first.stats.skipped) col.skipped[r.split(':')[0]] = (col.skipped[r.split(':')[0]] || 0) + 1;
+  if ((err = compiles(first.code, mode))) { col.brokeCompile++; problems.push('obfuscate: output does not compile: ' + err); return; }
+  try { const second = O.obfuscate(first.code, { ...OBF_ALL, sourceType, seed: 2 }); if ((err = compiles(second.code, mode))) problems.push('obfuscate: obfuscate(obfuscate(x)) does not compile: ' + err); }
+  catch (e) { problems.push('obfuscate: obfuscate(obfuscate(x)) threw: ' + e.message); }
+  col.compiled++;
+  // behavioural equivalence
+  let a1, a2, b;
+  try { a1 = await runObf(src, mode); a2 = await runObf(src, mode); b = await runObf(first.code, mode); }
+  catch { col.execError++; return; }                        // harness could not drive this file
+  if (!eq(a1, a2)) { col.nondeterministic++; return; }       // only compare deterministic files
+  if (eq(a1, b)) { if (a1.threw) col.matchedLoadThrew++; else col.matchedExercised++; return; }
+  // diverged with every pass on — was it only a name the program read at runtime?
+  try { const bn = await runObf(O.obfuscate(src, { ...OBF_NO_RENAME, sourceType, seed: 1 }).code, mode); if (eq(a1, bn)) { col.nameDependent++; return; } }
+  catch { /* fall through to failure */ }
+  col.diverged++;
+  problems.push('obfuscate: behaviour differs: orig=' + JSON.stringify(a1).slice(0, 180) + ' obf=' + JSON.stringify(b).slice(0, 180));
 }
 
 let P = null, S = null;
@@ -203,7 +286,7 @@ const report = {
   files: files.length, invalidOriginal: 0, modes: {}, failures: [],
   minify: { refused: [], raw: 0, ws: 0, mangled: 0 },
   parse: { accepted: 0, compared: 0, refused: [], skipped: [], renamedBindings: 0 },
-  obfuscate: { configs: Object.fromEntries(Object.keys(OBF_CONFIGS).map((k) => [k, { ran: 0, ok: 0, threw: 0, skipped: {} }])) },
+  obfuscate: { threw: 0, brokeCompile: 0, compiled: 0, execError: 0, nondeterministic: 0, matchedExercised: 0, matchedLoadThrew: 0, nameDependent: 0, diverged: 0, skipped: {} },
 };
 let index = 0;
 for (const file of files) {
@@ -236,9 +319,12 @@ if (want('parse')) lines.push(
   'parser accepted:      ' + report.parse.accepted + ' / ' + checked + ' (refused ' + report.parse.refused.length + ')',
   'scope rename skipped: ' + report.parse.skipped.length + ' (eval / with)',
   'bindings renamed:     ' + report.parse.renamedBindings + ' (occurrence oracle compared on ' + report.parse.compared + ' files)');
-if (want('obfuscate')) for (const [cname, c] of Object.entries(report.obfuscate.configs)) lines.push(
-  'obfuscate ' + cname.padEnd(8) + ': ' + c.ok + ' / ' + c.ran + ' survived re-compile (threw ' + c.threw + ')' +
-  (Object.keys(c.skipped).length ? ', passes skipped: ' + JSON.stringify(c.skipped) : ''));
+if (want('obfuscate')) { const o = report.obfuscate; lines.push(
+  'obfuscate compile:    ' + o.compiled + ' / ' + checked + ' compiled (threw ' + o.threw + ', broke ' + o.brokeCompile + ')' +
+    (Object.keys(o.skipped).length ? ', passes skipped: ' + JSON.stringify(o.skipped) : ''),
+  'obfuscate behaviour:  ' + o.matchedExercised + ' matched (ran) + ' + o.matchedLoadThrew + ' matched (threw at load), ' +
+    o.diverged + ' DIVERGED' + (o.nameDependent ? ', ' + o.nameDependent + ' name-dependent (expected)' : '') +
+    ', ' + o.nondeterministic + ' non-deterministic (skipped)' + (o.execError ? ', ' + o.execError + ' undrivable' : '')); }
 process.stdout.write(lines.join('\n') + '\n');
 for (const r of report.parse.refused) process.stdout.write('PARSE REFUSED [' + r.mode + ']: ' + r.error + '\n');
 for (const r of report.minify.refused) process.stdout.write('MINIFY REFUSED [' + r.mode + ']: ' + r.error + '\n');
