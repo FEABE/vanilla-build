@@ -6,6 +6,12 @@ pages to point at the results. TypeScript works through Node's own type stripper
 
 [한국어 README](README.ko.md) · [Changelog](CHANGELOG.md) · MIT License
 
+Part of a small family of zero-dependency, hand-written tools:
+[vanilla-arch](https://github.com/FEABE/vanilla-arch) (diagrams) ·
+[vanilla-kit](https://github.com/FEABE/vanilla-kit) (small modules) ·
+[vanilla-build](https://github.com/FEABE/vanilla-build) (build) ·
+[vanilla-deploy](https://github.com/FEABE/vanilla-deploy) (deploy)
+
 - **Zero dependencies.** `package.json` has no `dependencies` and no `devDependencies`. Everything runs on Node's
   standard library.
 - **Hand-written.** The parser, scope analysis, bundler, CSS tools and HTML scanner were written for this project.

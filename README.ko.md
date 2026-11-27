@@ -10,6 +10,12 @@
 
 [English README](README.md) · [변경 기록](CHANGELOG.md) · MIT License
 
+의존성 없이 직접 만든 도구 모음:
+[vanilla-arch](https://github.com/FEABE/vanilla-arch) (구성도) ·
+[vanilla-kit](https://github.com/FEABE/vanilla-kit) (작은 모듈) ·
+[vanilla-build](https://github.com/FEABE/vanilla-build) (빌드) ·
+[vanilla-deploy](https://github.com/FEABE/vanilla-deploy) (배포)
+
 - **의존성 0개.** `package.json`에는 `dependencies`도 `devDependencies`도 없습니다. 모든 것이 Node 표준
   라이브러리만으로 돌아갑니다.
 - **직접 작성.** 파서, 스코프 분석, 번들러, CSS 도구, HTML 스캐너는 이 프로젝트를 위해 직접 작성했습니다.
