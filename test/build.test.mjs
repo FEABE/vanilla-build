@@ -103,13 +103,6 @@ test('build: refuses dangerous output folders', async () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('build: obfuscation needs the experimental flag', async () => {
-  const dir = setup();
-  try {
-    await assert.rejects(build({ root: 'src', outDir: 'dist', obfuscate: true }, { cwd: dir }), /experimental/);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
-
 test('build: watch rebuilds after a change (debounced) and ignores the output folder', async () => {
   const dir = setup();
   let w;

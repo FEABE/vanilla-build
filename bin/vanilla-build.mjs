@@ -29,7 +29,6 @@ build options
   --no-minify  --no-hash  --no-clean  --integrity
   --public <dir>             copied as is over the output
   --watch                    rebuild when a file under root changes
-  --experimental-obfuscate   apply the experimental obfuscator (see README before using it)
 
 bundle options
   -o, --out <file>           write here (default: stdout)
@@ -37,7 +36,6 @@ bundle options
   --name <Global>            iife: assign the entry's exports to this global
   --external <a,b>           leave these specifiers as imports / requires
   --minify                   minify the bundle
-  --experimental-obfuscate   obfuscate the bundle (experimental)
 
 minify options
   -o, --out <file>   --no-mangle   --keep-fnames   --no-license
@@ -91,7 +89,6 @@ async function main() {
     if (flags['no-hash']) cfg.hash = false;
     if (flags['no-clean']) cfg.clean = false;
     if (flags.integrity) cfg.integrity = true;
-    if (flags['experimental-obfuscate']) { cfg.obfuscate = cfg.obfuscate || true; cfg.experimentalObfuscate = true; }
     if (flags.watch) {
       watch(cfg, {
         onBuild: (r) => { report(r); process.stdout.write('watching for changes (Ctrl+C to stop)\n'); },
@@ -110,10 +107,6 @@ async function main() {
       external: typeof flags.external === 'string' ? flags.external.split(',').filter(Boolean) : [],
     });
     let code = r.code;
-    if (flags['experimental-obfuscate']) {
-      const { obfuscate } = await import('../lib/obfuscate.mjs');
-      code = obfuscate(code, { sourceType: (flags.format || 'esm') === 'esm' ? 'module' : 'script' }).code;
-    }
     if (flags.minify) code = minify(code).code + '\n';
     for (const w of r.warnings) process.stderr.write('warning: ' + w + '\n');
     if (typeof flags.out === 'string') fs.writeFileSync(flags.out, code); else process.stdout.write(code);

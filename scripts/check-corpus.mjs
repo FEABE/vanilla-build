@@ -4,7 +4,7 @@
  * given folders and checks each result against independent oracles.
  *
  *   node scripts/check-corpus.mjs <dir>... [--exclude <dir name>]... [--json report.json] [--verbose]
- *                                [--only minify|parse|obfuscate]...
+ *                                [--only minify|parse]...
  *
  *   Every file is first classified with V8 (classic script, CommonJS function body, or ES module). Files V8 rejects
  *   are reported separately and not counted. For the others:
@@ -18,9 +18,7 @@
  *     2. every binding the scope analysis finds below the top level is renamed to a fresh, long name; the result
  *        must compile in the same mode and resolve every identifier occurrence to the same declaration according to
  *        the minifier's independent analysis (inspect().occurrences). This checks the scope analysis that the
- *        bundler and the obfuscator stand on.
- *   obfuscate  (lib/obfuscate.mjs, experimental) — every option together must produce output that compiles in the
- *     same mode.
+ *        bundler stands on.
  *
  *   Folders named node_modules and .git are always skipped; --exclude skips more folder names before reading them.
  */
@@ -55,7 +53,7 @@ for (let i = 0; i < args.length; i++) {
   else roots.push(args[i]);
 }
 if (!roots.length) {
-  process.stderr.write('usage: check-corpus <dir>... [--exclude name]... [--json out] [--verbose] [--only minify|parse|obfuscate]\n');
+  process.stderr.write('usage: check-corpus <dir>... [--exclude name]... [--json out] [--verbose] [--only minify|parse]\n');
   process.exit(2);
 }
 const want = (k) => !only.size || only.has(k);
@@ -140,7 +138,7 @@ function checkMinify(src, mode, report, problems) {
   return true;
 }
 
-let P = null, S = null, O = null;
+let P = null, S = null;
 async function checkParse(src, mode, report, problems) {
   P ??= await import('../lib/parse/parser.mjs');
   S ??= await import('../lib/parse/scope.mjs');
@@ -167,24 +165,12 @@ async function checkParse(src, mode, report, problems) {
   report.parse.renamedBindings += renamed.count;
 }
 
-async function checkObfuscate(src, mode, report, problems) {
-  O ??= await import('../lib/obfuscate.mjs');
-  let out;
-  try {
-    out = O.obfuscate(src, { sourceType: mode === 'module' ? 'module' : 'script', allowReturnOutsideFunction: mode === 'cjs', seed: 1, rename: true, strings: true, stringArray: true, deadCode: true, controlFlow: true });
-  } catch (e) { report.obfuscate.refused.push({ mode, error: e.message }); return; }
-  const err = compiles(out.code, mode);
-  if (err) problems.push('obfuscate: output does not compile: ' + err);
-  else report.obfuscate.ok++;
-}
-
 const files = [];
 for (const r of roots) walk(path.resolve(r), files);
 const report = {
   files: files.length, invalidOriginal: 0, modes: {}, failures: [],
   minify: { refused: [], raw: 0, ws: 0, mangled: 0 },
   parse: { accepted: 0, compared: 0, refused: [], skipped: [], renamedBindings: 0 },
-  obfuscate: { ok: 0, refused: [] },
 };
 let index = 0;
 for (const file of files) {
@@ -196,7 +182,6 @@ for (const file of files) {
   const problems = [];
   if (want('minify')) checkMinify(src, mode, report, problems);
   if (want('parse')) await checkParse(src, mode, report, problems);
-  if (want('obfuscate')) await checkObfuscate(src, mode, report, problems);
   // Reports name files by their index only, so a run over private folders can be shared.
   if (problems.length) report.failures.push({ file: verbose ? file : '#' + index, mode, problems });
   if (verbose) process.stdout.write((problems.length ? 'FAIL ' : 'ok   ') + file + '\n');
@@ -217,11 +202,9 @@ if (want('parse')) lines.push(
   'parser accepted:      ' + report.parse.accepted + ' / ' + checked + ' (refused ' + report.parse.refused.length + ')',
   'scope rename skipped: ' + report.parse.skipped.length + ' (eval / with)',
   'bindings renamed:     ' + report.parse.renamedBindings + ' (occurrence oracle compared on ' + report.parse.compared + ' files)');
-if (want('obfuscate')) lines.push('obfuscate compiled:   ' + report.obfuscate.ok + ' (refused ' + report.obfuscate.refused.length + ')');
 process.stdout.write(lines.join('\n') + '\n');
 for (const r of report.parse.refused) process.stdout.write('PARSE REFUSED [' + r.mode + ']: ' + r.error + '\n');
 for (const r of report.minify.refused) process.stdout.write('MINIFY REFUSED [' + r.mode + ']: ' + r.error + '\n');
-for (const r of report.obfuscate.refused) process.stdout.write('OBFUSCATE REFUSED [' + r.mode + ']: ' + r.error + '\n');
 for (const f of report.failures) process.stdout.write('FAIL ' + f.file + ' [' + f.mode + ']:\n  ' + f.problems.join('\n  ') + '\n');
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(report, null, 2));
 process.exit(report.failures.length || report.parse.refused.length ? 1 : 0);
