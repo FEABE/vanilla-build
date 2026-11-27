@@ -90,6 +90,22 @@ test('build: --no-hash keeps names; clean removes stale files', async () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('build: clean: false keeps existing files; minify: false leaves bundles and CSS unminified', async () => {
+  const dir = setup();
+  try {
+    fs.mkdirSync(path.join(dir, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'dist/keep.txt'), 'x');
+    const r = await build({ root: 'src', outDir: 'dist', clean: false, minify: false }, { cwd: dir });
+    assert.ok(fs.existsSync(path.join(dir, 'dist/keep.txt')));
+    const js = fs.readFileSync(path.join(dir, 'dist', r.manifest['js/main.ts']), 'utf8');
+    assert.match(js, /function greet\(name\s*\)/, 'names kept');
+    assert.match(js, /^\/\/ js\/greet\.ts$/m, 'module comments kept');
+    const css = fs.readFileSync(path.join(dir, 'dist', r.manifest['css/app.css']), 'utf8');
+    assert.match(css, /body \{ margin: 0 \}/);
+    assert.ok(!css.includes('@import'), 'imports are still inlined');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('build: refuses dangerous output folders', async () => {
   const dir = setup();
   try {
@@ -100,6 +116,29 @@ test('build: refuses dangerous output folders', async () => {
     await assert.rejects(build({ root: 'src', outDir: 'other' }, { cwd: dir }), /\.git/);
     assert.throws(() => checkOutDir(path.parse(dir).root, path.join(dir, 'src'), dir), /filesystem root/);
     assert.ok(fs.existsSync(path.join(dir, 'src/index.html')), 'nothing was deleted');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('build: html list, extra entries, external + globals for iife', async () => {
+  const dir = tempDir('vb-build-');
+  try {
+    writeFiles(dir, {
+      'src/index.html': '<script src="js/a.js"></script>\n',
+      'src/raw.html': '<script src="js/a.js"></script>\n',
+      'src/js/a.js': 'globalThis.__a = 1;\n',
+      'src/js/worker.js': 'import dep from "dep";\nexport const v = dep.x + 1;\n',
+    });
+    const r = await build({
+      root: 'src', outDir: 'dist', html: ['index.html'],
+      entries: [{ entry: 'js/worker.js', format: 'iife', name: 'W' }], external: ['dep'], globals: { dep: 'Dep' },
+    }, { cwd: dir });
+    const out = (p) => fs.readFileSync(path.join(dir, 'dist', p), 'utf8');
+    assert.ok(out('index.html').includes('src="' + r.manifest['js/a.js'] + '"'), 'listed page is rewritten');
+    assert.equal(out('raw.html'), '<script src="js/a.js"></script>\n', 'a page not in the list is copied as is');
+    assert.match(r.manifest['js/worker.js'], /^js\/worker\.[0-9a-f]{8}\.js$/);
+    const ctx = vm.createContext({ Dep: { x: 41 } });
+    vm.runInContext(out(r.manifest['js/worker.js']), ctx);
+    assert.equal(ctx.W.v, 42, 'iife entry exposes its exports on the global name and reads the external from globals');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

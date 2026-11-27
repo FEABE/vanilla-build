@@ -1,0 +1,5 @@
+[
+  { "name": "bundle ES modules", "done": true },
+  { "name": "strip TypeScript types", "done": true },
+  { "name": "source maps", "done": false }
+]

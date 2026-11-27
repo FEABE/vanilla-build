@@ -1,0 +1,11 @@
+@import "./base.css";
+
+/* Rebased by the build when this file is inlined elsewhere; untouched here. */
+h1 {
+  background: url(../img/logo.svg) no-repeat left center / 1em;
+  padding-left: 1.5em;
+}
+
+#app li {
+  color: var(--accent);
+}
