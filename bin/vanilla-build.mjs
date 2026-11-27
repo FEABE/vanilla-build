@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { build, watch, loadConfig } from '../lib/build.mjs';
 import { bundle } from '../lib/bundle.mjs';
 import { minify } from '../lib/minify.mjs';
+import { obfuscate } from '../lib/obfuscate.mjs';
 import { inlineImports, minifyCss } from '../lib/css.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ build options
   --no-minify  --no-hash  --no-clean  --integrity
   --public <dir>             copied as is over the output
   --watch                    rebuild when a file under root changes
+  --experimental-obfuscate   EXPERIMENTAL, off by default; obfuscate each JS bundle (NOT a security measure)
 
 bundle options
   -o, --out <file>           write here (default: stdout)
@@ -36,6 +38,7 @@ bundle options
   --name <Global>            iife: assign the entry's exports to this global
   --external <a,b>           leave these specifiers as imports / requires
   --minify                   minify the bundle
+  --experimental-obfuscate   EXPERIMENTAL, off by default (NOT a security measure); after --minify if both given
 
 minify options
   -o, --out <file>   --no-mangle   --keep-fnames   --no-license
@@ -89,6 +92,7 @@ async function main() {
     if (flags['no-hash']) cfg.hash = false;
     if (flags['no-clean']) cfg.clean = false;
     if (flags.integrity) cfg.integrity = true;
+    if (flags['experimental-obfuscate'] && !cfg.experimentalObfuscate) cfg.experimentalObfuscate = true;
     if (flags.watch) {
       watch(cfg, {
         onBuild: (r) => { report(r); process.stdout.write('watching for changes (Ctrl+C to stop)\n'); },
@@ -108,6 +112,13 @@ async function main() {
     });
     let code = r.code;
     if (flags.minify) code = minify(code).code + '\n';
+    if (flags['experimental-obfuscate']) {
+      const fmt = flags.format || 'esm';
+      const sourceType = fmt === 'esm' ? 'module' : fmt === 'cjs' ? 'commonjs' : 'script';
+      const o = obfuscate(code, { sourceType });
+      for (const s of o.stats.skipped) process.stderr.write('warning: obfuscate skipped — ' + s + '\n');
+      code = o.code + '\n';
+    }
     for (const w of r.warnings) process.stderr.write('warning: ' + w + '\n');
     if (typeof flags.out === 'string') fs.writeFileSync(flags.out, code); else process.stdout.write(code);
     return;

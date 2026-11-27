@@ -1,6 +1,9 @@
 // Bundler fixtures: each case is a small multi-module program. test/bundle.test.mjs writes it to a temporary
 // folder, runs it natively with Node, bundles it in every format, runs the bundle and compares stdout, the exit
 // code and the name of an uncaught error. `formats` limits the formats; `buildError` expects the build to fail.
+// `obfSkip` lists experimental obfuscator passes a case is documented to be incompatible with (used only by
+// scripts/obfuscate-suites.mjs): `rename` changes function/class .name values; `controlFlow` hoists lexical
+// declarations and so does not reproduce temporal-dead-zone errors.
 const out = 'const out = (...a) => console.log(a.map((v) => typeof v === "string" ? v : JSON.stringify(v)).join(" "));\n';
 const errName = 'const errName = (f) => { try { f(); return "no error"; } catch (e) { return e.constructor.name; } };\n';
 
@@ -13,6 +16,7 @@ export const cases = {
     },
   },
   'circular-tdz-uncaught': {
+    obfSkip: ['controlFlow'],
     files: {
       'main.mjs': 'import "./a.mjs";\nconsole.log("not reached");\n',
       'a.mjs': 'import { y } from "./b.mjs";\nexport let x = 1;\nconsole.log("a", y);\n',
@@ -20,6 +24,7 @@ export const cases = {
     },
   },
   'circular-tdz-caught': {
+    obfSkip: ['controlFlow'],
     files: {
       'main.mjs': out + errName + 'import { read, late } from "./b.mjs";\nout("after", read(), late);\n',
       'a.mjs': out + errName + 'import { late } from "./b.mjs";\nout("let", errName(() => late));\nexport let lateA = 1;\n',
@@ -61,6 +66,7 @@ export const cases = {
     },
   },
   'default-and-named': {
+    obfSkip: ['rename'],
     files: {
       'main.mjs': out +
         'import fn, { named as n, Klass } from "./fn.mjs";\nimport K from "./klass.mjs";\nimport expr from "./expr.mjs";\nimport anon from "./anon.mjs";\nimport anonClass from "./anon-class.mjs";\nimport arrow from "./arrow.mjs";\nimport alias, { bump } from "./alias.mjs";\nimport snap, { bumpSnap } from "./snapshot.mjs";\n' +

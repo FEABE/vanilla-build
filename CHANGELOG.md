@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0 — 2026-11-27
+
+- **Experimental obfuscator** (`lib/obfuscate.mjs`), **off by default.** Reachable only through the
+  `--experimental-obfuscate` CLI flag, the `experimentalObfuscate` config / API option, or a direct `obfuscate()`
+  call; with it off every build is byte-for-byte identical to 0.1.x.
+  - Passes: scope-aware `rename` (declared locals only — globals, imports/exports and classic-script top-level names
+    are kept; disabled for a file using direct `eval` / `with`), `strings` (hex/unicode escapes), `stringArray`
+    (encoded table + a decoder, no new global), `deadCode`, and `controlFlow` (switch-in-a-loop flattening).
+  - No `eval` / `new Function`: output runs under a CSP without `'unsafe-eval'`.
+  - **Not a security measure.** It only raises the effort of reading the code and never prevents recovery. See the
+    README section "Experimental: obfuscation" for the full disclaimer and the per-pass limitations.
+  - Zero-dependency and hand-written; reuses the existing parser and scope analysis.
+  - Exposed from the API as `obfuscate`, `OBFUSCATE_DEFAULTS`, `OBFUSCATE_OPTIONS`.
+- **Corpus checker** gains an `--only obfuscate` layer: parse-survival of every obfuscated file (and every
+  double-obfuscated file) against V8 as the oracle.
+- **Tests:** 87 with `node --test` (the 54 from 0.1.0 plus obfuscator construct, build-integration and
+  suite-rerun tests; constructs are run in both sloppy and strict mode). `scripts/obfuscate-suites.mjs` reruns
+  vanilla-kit / vanilla-arch suites against obfuscated builds across seeds, including the shipped bundle → minify →
+  obfuscate order.
+
 ## 0.1.0 — 2026-11-27
 
 First release.

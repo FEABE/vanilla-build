@@ -1,6 +1,6 @@
 {
   "name": "vanilla-build",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Zero-dependency build tool: ESM/CommonJS bundler, minifier, content-hashed assets, TypeScript stripping. No third-party code.",
   "type": "module",

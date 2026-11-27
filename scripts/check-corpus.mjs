@@ -19,6 +19,11 @@
  *        must compile in the same mode and resolve every identifier occurrence to the same declaration according to
  *        the minifier's independent analysis (inspect().occurrences). This checks the scope analysis that the
  *        bundler stands on.
+ *   obfuscate  (lib/obfuscate.mjs — EXPERIMENTAL)
+ *     Parse-survival only. For the default option set and for every pass turned on at once, the obfuscated output
+ *     must compile in the same mode as the original (V8 is the oracle — obfuscate() ends with its own parser, so
+ *     checking only with that would be circular), and obfuscate(obfuscate(x)) must compile too. This measures
+ *     nothing about how hard the result is to read; it only proves the transform never produces broken code.
  *
  *   Folders named node_modules and .git are always skipped; --exclude skips more folder names before reading them.
  */
@@ -138,6 +143,33 @@ function checkMinify(src, mode, report, problems) {
   return true;
 }
 
+// ---- obfuscate (experimental): parse-survival against V8 as the oracle
+let O = null;
+const OBF_CONFIGS = {
+  default: undefined,     // obfuscate()'s own default option set
+  all: { rename: true, strings: true, stringArray: true, deadCode: true, controlFlow: true, deadCodeRate: 0.3 },
+};
+async function checkObfuscate(src, mode, report, problems) {
+  O ??= await import('../lib/obfuscate.mjs');
+  const sourceType = mode === 'cjs' ? 'commonjs' : mode;    // classify() gives script | cjs | module
+  for (const [cname, extra] of Object.entries(OBF_CONFIGS)) {
+    const options = { ...(extra || {}), sourceType, seed: 1 };
+    const col = report.obfuscate.configs[cname];
+    let first;
+    try { first = O.obfuscate(src, options); }
+    catch (e) { col.threw++; problems.push('obfuscate[' + cname + ']: threw: ' + e.message); continue; }
+    col.ran++;
+    for (const r of first.stats.skipped) col.skipped[r.split(':')[0]] = (col.skipped[r.split(':')[0]] || 0) + 1;
+    let err;
+    if ((err = compiles(first.code, mode))) { problems.push('obfuscate[' + cname + ']: output does not compile: ' + err); continue; }
+    let second;
+    try { second = O.obfuscate(first.code, options); }
+    catch (e) { problems.push('obfuscate[' + cname + ']: obfuscate(obfuscate(x)) threw: ' + e.message); continue; }
+    if ((err = compiles(second.code, mode))) { problems.push('obfuscate[' + cname + ']: obfuscate(obfuscate(x)) does not compile: ' + err); continue; }
+    col.ok++;
+  }
+}
+
 let P = null, S = null;
 async function checkParse(src, mode, report, problems) {
   P ??= await import('../lib/parse/parser.mjs');
@@ -171,6 +203,7 @@ const report = {
   files: files.length, invalidOriginal: 0, modes: {}, failures: [],
   minify: { refused: [], raw: 0, ws: 0, mangled: 0 },
   parse: { accepted: 0, compared: 0, refused: [], skipped: [], renamedBindings: 0 },
+  obfuscate: { configs: Object.fromEntries(Object.keys(OBF_CONFIGS).map((k) => [k, { ran: 0, ok: 0, threw: 0, skipped: {} }])) },
 };
 let index = 0;
 for (const file of files) {
@@ -182,6 +215,7 @@ for (const file of files) {
   const problems = [];
   if (want('minify')) checkMinify(src, mode, report, problems);
   if (want('parse')) await checkParse(src, mode, report, problems);
+  if (want('obfuscate')) await checkObfuscate(src, mode, report, problems);
   // Reports name files by their index only, so a run over private folders can be shared.
   if (problems.length) report.failures.push({ file: verbose ? file : '#' + index, mode, problems });
   if (verbose) process.stdout.write((problems.length ? 'FAIL ' : 'ok   ') + file + '\n');
@@ -202,6 +236,9 @@ if (want('parse')) lines.push(
   'parser accepted:      ' + report.parse.accepted + ' / ' + checked + ' (refused ' + report.parse.refused.length + ')',
   'scope rename skipped: ' + report.parse.skipped.length + ' (eval / with)',
   'bindings renamed:     ' + report.parse.renamedBindings + ' (occurrence oracle compared on ' + report.parse.compared + ' files)');
+if (want('obfuscate')) for (const [cname, c] of Object.entries(report.obfuscate.configs)) lines.push(
+  'obfuscate ' + cname.padEnd(8) + ': ' + c.ok + ' / ' + c.ran + ' survived re-compile (threw ' + c.threw + ')' +
+  (Object.keys(c.skipped).length ? ', passes skipped: ' + JSON.stringify(c.skipped) : ''));
 process.stdout.write(lines.join('\n') + '\n');
 for (const r of report.parse.refused) process.stdout.write('PARSE REFUSED [' + r.mode + ']: ' + r.error + '\n');
 for (const r of report.minify.refused) process.stdout.write('MINIFY REFUSED [' + r.mode + ']: ' + r.error + '\n');

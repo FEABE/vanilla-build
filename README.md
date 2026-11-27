@@ -288,6 +288,71 @@ The following work as described but have no test in this repository yet:
 - `@import ... supports(...)` being left in place.
 - The minifier's `--no-mangle`, `--keep-fnames` and `--no-license` flags.
 
+## Experimental: obfuscation
+
+> **This is not a security measure.** Obfuscation only raises the effort of reading the code; it never prevents
+> recovery. Anyone who runs the code can read every string and watch every value, and the transforms below can be
+> undone. Do not put a secret, a key, or a check you need to hold in client code and expect obfuscation to protect
+> it — it will not. This feature exists as a hand-written exercise in AST transformation, nothing more.
+
+It is **experimental and off by default.** Nothing changes unless you ask for it with the `--experimental-obfuscate`
+CLI flag, the `experimentalObfuscate` config / API option, or a direct call to `obfuscate()`. With it off, every build
+is byte-for-byte identical to 0.1.x. It is zero-dependency and hand-written like the rest of the tool, and it reuses
+the same parser and scope analysis as the bundler and minifier.
+
+```bash
+vanilla-build build --experimental-obfuscate      # obfuscate every JS bundle (after minify)
+vanilla-build bundle src/app.js --minify --experimental-obfuscate
+```
+
+```js
+import { obfuscate } from 'vanilla-build';
+const { code, stats } = obfuscate(source, { sourceType: 'module' /* 'script' | 'module' | 'commonjs' */ });
+```
+
+In a build it runs **after** minify, over each JS bundle. Options (all booleans unless noted):
+
+| option | default | what it does |
+| --- | --- | --- |
+| `rename` | on | Renames bindings found by scope analysis to `_0x…` names. **Only declared locals change.** Free variables (`window`, `localStorage`, any global your page defines) are never touched, imported and exported names are kept (the module contract), and a classic script's top-level names are kept because they are globals. |
+| `strings` | on | Rewrites string literals with `\x` / `\u` escapes. Property keys are included; directives and module specifiers are not. |
+| `stringArray` | on | Moves string literals into one encoded table (a custom base64 alphabet over UTF-8, rotated) read through a small decoder function. In a classic script the table is placed inside the outermost wrapper function so no global is added. |
+| `deadCode` | off | Inserts unreachable `if (<always false>) { … }` blocks into function bodies. `deadCodeRate` (0–1) sets how often. |
+| `controlFlow` | off | Turns function bodies with at least `controlFlowMin` statements into a shuffled `switch` inside a loop, driven by an order string. |
+
+`seed` makes a run reproducible; the same seed gives the same output. `stats.skipped` lists the file- or scope-level
+reasons a pass declined to run (direct `eval` / `with` for `rename`, no wrapper function for `stringArray`), and in a
+build those become warnings.
+
+**No `eval`, no `new Function`, no other string-to-code.** The output runs under a Content-Security-Policy without
+`'unsafe-eval'`; the string-table decoder is ordinary array and `decodeURIComponent` work, not code generation.
+Self-defending / anti-debugging tricks are deliberately not offered — they only hurt real users and browsers.
+
+### What it does not do, and where it steps aside
+
+Two passes step aside rather than risk wrong code — they skip the scope and record it in `stats.skipped`. Two others
+stay correct for almost all code but change behaviour in ways worth knowing. Known limits:
+
+- **`rename` is disabled for the whole file when it uses direct `eval` or `with`** (skipped), because neither can be
+  resolved statically. The file still goes through the other passes; `stats.skipped` records the reason.
+- **`stringArray` needs a wrapper** (skipped). A classic script with no outermost wrapper function (IIFE / UMD
+  factory, including `var X = (function(){…})()`) is left with its strings in place, so the table never becomes a new
+  global; `stats.skipped` records it.
+- **`rename` changes `function.name` / `class.name` values** (behaviour change). Code that reads a function's `.name`
+  at run time (some dependency-injection and router tricks) will see the obfuscated name.
+- **`controlFlow` does not reproduce the temporal dead zone, and turns `const` into `let`** (behaviour change). It
+  hoists lexical declarations out of the re-entered switch block and turns them into assignments, so a binding read
+  before its initializer runs yields `undefined` instead of a `ReferenceError`, and reassigning a former `const` no
+  longer throws. Leave `controlFlow` off for code that relies on TDZ errors or on `const` immutability at run time
+  (for example some circular-import patterns).
+- It is **not** a minifier and it does not shrink code — `controlFlow` and `deadCode` make the output larger.
+
+This was checked by running vanilla-kit's and vanilla-arch's own `node --test` suites against obfuscated builds of
+their modules across many seeds, by confirming vanilla-arch renders a pixel-identical canvas (`toDataURL`) obfuscated
+or not, and by obfuscating a large corpus of real `.js`/`.mjs` files and re-parsing every result (and every
+double-obfuscated result). None of this measures how hard the output is to read, and no such claim is made: see the
+warning at the top of this section.
+
 ## Limitations
 
 - **No source maps.** No JSX. The parser also rejects decorators and HTML-like comments.
