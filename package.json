@@ -1,0 +1,37 @@
+{
+  "name": "vanilla-build",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency build tool: ESM/CommonJS bundler, minifier, content-hashed assets, TypeScript stripping. No third-party code.",
+  "type": "module",
+  "bin": {
+    "vanilla-build": "bin/vanilla-build.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md",
+    "README.ko.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "corpus": "node scripts/check-corpus.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "bundler",
+    "minifier",
+    "build",
+    "esm",
+    "zero-dependency"
+  ],
+  "author": "FEABE",
+  "license": "MIT"
+}
